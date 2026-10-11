@@ -2,6 +2,8 @@
 """Panel local para preparar y ejecutar los generadores de Tazón para Dos."""
 from __future__ import annotations
 
+import ast
+import hashlib
 import json
 import mimetypes
 import os
@@ -19,6 +21,8 @@ from urllib.parse import quote, unquote, urlsplit
 ROOT = Path(__file__).resolve().parent
 BRAND = Path(os.environ.get("BRAND_REPO", ROOT.parent / "tazon-para-dos-marca")).expanduser().resolve()
 PROJECTS = ROOT / "projects"
+FFMPEG = shutil.which("ffmpeg") or "ffmpeg"
+FFPROBE = shutil.which("ffprobe") or "ffprobe"
 STATIC = ROOT / "static"
 PORT = int(os.environ.get("PORT", "8765"))
 MAX_UPLOAD = 1024 * 1024 * 1024
@@ -113,10 +117,18 @@ def files_in(path: Path) -> list[dict]:
     return result
 
 
+def outputs_in(path: Path) -> list[dict]:
+    items = [i for i in (path / "outputs").glob("*") if i.is_file() and i.suffix.lower() in {".png", ".mp4", ".jpg", ".svg"}]
+    items.sort(key=lambda i: i.stat().st_mtime, reverse=True)
+    return [{"name": i.name, "path": f"outputs/{i.name}", "kind": "video" if i.suffix.lower() == ".mp4" else "image",
+             "size": i.stat().st_size, "time": time.strftime("%Y-%m-%d %H:%M", time.localtime(i.stat().st_mtime))} for i in items]
+
+
 def project_json(path: Path) -> dict:
     data = metadata(path)
     data["id"] = path.name
     data["files"] = files_in(path)
+    data["outputs"] = outputs_in(path)
     data["paths"] = {
         "root": str(path),
         "media": str(path / "media"),
@@ -207,6 +219,79 @@ def templates() -> list[dict]:
     ]
 
 
+def montaje_consts() -> dict:
+    """Constantes literales de tools/montaje.py, sin ejecutarlo."""
+    consts = {}
+    try:
+        for node in ast.parse((BRAND / "tools" / "montaje.py").read_text(encoding="utf-8")).body:
+            if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                try:
+                    consts[node.targets[0].id] = ast.literal_eval(node.value)
+                except ValueError:
+                    pass
+    except (OSError, SyntaxError):
+        pass
+    return consts
+
+
+def thumbnail(project: Path, target: Path, at: float, width: int) -> Path:
+    """Fotograma JPG de un video (con mapeo de tonos si es HDR), guardado en project/thumbs.
+
+    Los navegadores en Windows no muestran videos HEVC/HDR de celular; el fotograma sí se ve en todos.
+    """
+    stat = target.stat()
+    key = hashlib.sha1(f"{target.name}|{stat.st_mtime_ns}|{at:.2f}|{width}".encode()).hexdigest()[:20]
+    out = project / "thumbs" / f"{key}.jpg"
+    if out.exists():
+        return out
+    out.parent.mkdir(exist_ok=True)
+    try:
+        probe = subprocess.run([FFPROBE, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=color_transfer",
+                                "-of", "csv=p=0", str(target)], capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        probe = ""
+    hdr = probe.split(",")[0].strip() in ("smpte2084", "arib-std-b67")
+    tonemap = montaje_consts().get("TONEMAP", "") if hdr else ""
+    tmp = out.with_name(f"{key}-{uuid.uuid4().hex[:6]}.jpg")
+    for start in (at, 0):   # si el segundo pedido pasa del final, se usa el primer fotograma
+        try:
+            subprocess.run([FFMPEG, "-y", "-loglevel", "error", "-ss", f"{start:.2f}", "-i", str(target), "-frames:v", "1",
+                            "-vf", f"{tonemap}scale={width}:-2", "-q:v", "4", str(tmp)], capture_output=True, timeout=60)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        if tmp.exists() and tmp.stat().st_size:
+            tmp.replace(out)
+            return out
+    raise ValueError("No se pudo sacar el fotograma (¿falta ffmpeg?)")
+
+
+def video_config() -> dict:
+    """Estilos de capa, ventanas y formatos de tools/montaje.py, sin ejecutarlo."""
+    consts = montaje_consts()
+    capa = consts.get("CAPA", {})
+    return {
+        "formatos": {k: list(v) for k, v in consts.get("SIZE", {}).items()},
+        "capa": {f"{k[0]}:{k[1]}": v for k, v in capa.items()},
+        "ventana": {k: list(v) for k, v in consts.get("VENTANA", {}).items()},
+        "ventana_marco": [960, 540, 60, 650],   # 9x16-marco: clip horizontal dentro de marco_video
+        "texto_en_marco": sorted(consts.get("TEXTO_EN_MARCO", [])),
+    }
+
+
+def estado() -> dict:
+    """Compatibilidad con el kit: ejecuta su contrato (tools/generador.py --json)."""
+    if not (BRAND / "tools").is_dir():
+        return {"ok": False, "kit": str(BRAND), "errores": [f"No se encontró el kit de marca en {BRAND} (usa BRAND_REPO)"], "avisos": []}
+    contrato = BRAND / "tools" / "generador.py"
+    if not contrato.exists():
+        return {"ok": True, "kit": str(BRAND), "errores": [], "avisos": ["El kit no tiene tools/generador.py: actualízalo para revisar la compatibilidad"]}
+    result = run_python(contrato, ["--json"], BRAND, timeout=120)
+    try:
+        return json.loads(result.get("stdout", "").strip().splitlines()[-1])
+    except (IndexError, json.JSONDecodeError):
+        return {"ok": False, "kit": str(BRAND), "errores": ["El contrato del kit falló: " + (result.get("stderr") or result.get("error") or "")[-600:]], "avisos": []}
+
+
 class App(BaseHTTPRequestHandler):
     server_version = "GeneradorTPD/1.0"
 
@@ -228,20 +313,29 @@ class App(BaseHTTPRequestHandler):
                 return json_response(self, {"projects": items})
             if url.path == "/api/templates":
                 return json_response(self, {"templates": templates()})
+            if url.path == "/api/estado":
+                return json_response(self, estado())
+            if url.path == "/api/video-config":
+                return json_response(self, video_config())
             file_match = re.fullmatch(r"/files/([\w-]+)/(.+)", url.path)
             if file_match:
                 path = project_path(file_match.group(1))
                 target = (path / Path(unquote(file_match.group(2)))).resolve()
                 if path.resolve() not in target.parents or not target.is_file():
                     return json_response(self, {"error": "Archivo no encontrado"}, 404)
-                body = target.read_bytes()
-                self.send_response(200)
-                self.send_header("Content-Type", mimetypes.guess_type(str(target))[0] or "application/octet-stream")
-                self.send_header("Content-Disposition", disposition(target.name))
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-                return
+                return self.send_file(target, download="descargar=1" in url.query)
+            thumb_match = re.fullmatch(r"/thumb/([\w-]+)/(.+)", url.path)
+            if thumb_match:
+                path = project_path(thumb_match.group(1))
+                target = (path / Path(unquote(thumb_match.group(2)))).resolve()
+                if path.resolve() not in target.parents or not target.is_file():
+                    return json_response(self, {"error": "Archivo no encontrado"}, 404)
+                if target.suffix.lower() in IMAGE_EXTENSIONS:
+                    return self.send_file(target)
+                query = dict(part.split("=", 1) for part in url.query.split("&") if "=" in part)
+                at = max(0.0, float(query.get("t", "0.5") or 0.5))
+                width = min(1920, max(64, int(float(query.get("w", "360") or 360))))
+                return self.send_file(thumbnail(path, target, at, width))
             match = re.fullmatch(r"/api/projects/([\w-]+)", url.path)
             if match:
                 path = project_path(match.group(1))
@@ -331,6 +425,10 @@ class App(BaseHTTPRequestHandler):
                 result.update({"job": str(script_file), "output": str(output_path), "download": f"/files/{path.name}/{output_path.relative_to(path).as_posix()}", "project": project_json(path)})
                 return json_response(self, result, 200 if result.get("ok") else 500)
 
+            if url.path == "/api/validate":
+                result = run_python(BRAND / "tools" / "validar.py", [], BRAND, timeout=1800)
+                return json_response(self, result, 200 if result.get("code") in (0, 1) else 500)
+
             if url.path == "/api/video-kit":
                 result = run_python(BRAND / "tools" / "video.py", [], BRAND, timeout=3600)
                 return json_response(self, result, 200 if result.get("ok") else 500)
@@ -354,17 +452,46 @@ class App(BaseHTTPRequestHandler):
             return json_response(self, {"error": "Archivo no encontrado"}, 404)
         self.send_file(target)
 
-    def send_file(self, target: Path):
-        body = target.read_bytes()
-        self.send_response(200)
+    def send_file(self, target: Path, download: bool = False):
+        size = target.stat().st_size
+        start, end = 0, size - 1
+        rng = re.fullmatch(r"bytes=(\d*)-(\d*)", self.headers.get("Range", "").strip())
+        if rng and size and (rng.group(1) or rng.group(2)):
+            if rng.group(1):
+                start, end = int(rng.group(1)), min(int(rng.group(2) or size - 1), size - 1)
+            else:
+                start = max(0, size - int(rng.group(2)))
+            if start > end:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.end_headers()
+                return
+            self.send_response(206)
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        else:
+            self.send_response(200)
         kind = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
         if kind.startswith("text/") or kind in ("application/javascript", "application/json", "image/svg+xml"):
             kind += "; charset=utf-8"
         self.send_header("Content-Type", kind)
-        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Length", str(end - start + 1))
+        self.send_header("Accept-Ranges", "bytes")
         self.send_header("Cache-Control", "no-cache")
+        if download:
+            self.send_header("Content-Disposition", disposition(target.name))
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            with target.open("rb") as fh:
+                fh.seek(start)
+                left = end - start + 1
+                while left > 0:
+                    chunk = fh.read(min(1024 * 1024, left))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    left -= len(chunk)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass   # el navegador cortó la descarga (normal al adelantar un video)
 
 
 def main():
@@ -372,6 +499,11 @@ def main():
     if not (BRAND / "tools").is_dir():
         print(f"Advertencia: no se encontró el kit en {BRAND}")
     print(f"Kit de marca: {BRAND}")
+    status = estado()
+    for problem in status.get("errores", []):
+        print(f"ERROR: {problem}")
+    for problem in status.get("avisos", []):
+        print(f"Aviso: {problem}")
     url = f"http://127.0.0.1:{PORT}"
     print(f"Panel local: {url}")
     server = ThreadingHTTPServer(("127.0.0.1", PORT), App)

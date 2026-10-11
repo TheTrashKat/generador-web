@@ -4,3 +4,4 @@ projects/*/jobs/*
 projects/*/project.json
 __pycache__/
 .DS_Store
+projects/*/thumbs/*

@@ -50,11 +50,20 @@ BRAND_REPO=/ruta/al/tazon-para-dos-marca python server.py
 - Muestra un formulario con los campos de cada plantilla (leídos de `editor/templates.js` del kit) y una vista previa en vivo; las fotos del proyecto se eligen en una lista. Los valores en JSON siguen disponibles en «avanzado».
 - Genera jobs JSON para `tools/render_editor.py`.
 - Genera guiones JSON para `tools/montaje.py`.
-- Videos en todas las líneas: Editorial, Mesa/Zine, TikTok (gancho y 5 estilos de subtítulo), clásica, banda, stickers y marco.
+- Videos en todas las líneas: Editorial y Mesa/Zine (líneas oficiales), TikTok, clásica, banda, stickers y marco. Los estilos y sus ventanas se leen de `tools/montaje.py`, y los campos de la marca de cada estilo de su plantilla, así el panel sigue al kit cuando cambie.
+- Vista previa del video: el primer segmento con la capa de marca, el titular o subtítulo y el gancho, tal como los pone el montaje.
+- Segmentos ordenables con flechas: desde qué segundo empieza cada clip, duración, encuadre (incluye extremos para no cortar a quien narra), texto y separadores (tarjetas de capítulo).
+- TikTok: gancho inicial, 5 estilos de subtítulo (karaoke, caja, recorte, pop, editorial), tarjeta de cierre Zine o Editorial y formato lista (Top N con número y título). Al elegirlo apaga la intro y acorta los segmentos a 3 s, como recomienda el kit.
+- Muestra cada imagen o video generado en el panel (con reproductor) y guarda una galería de resultados por proyecto.
 - Ejecuta los scripts Python y muestra su salida.
 - Puede regenerar el kit de video con `tools/video.py`.
+- Puede validar todas las plantillas con `tools/validar.py` (debe dar 0 errores).
 
 Los archivos de trabajo quedan en `projects/`. Esa carpeta está preparada para ignorar medios y resultados grandes al subir este proyecto a Git.
+
+## Compatibilidad con el kit
+
+El panel depende de la forma de algunos scripts y archivos del kit (lista de plantillas, constantes de `tools/montaje.py`, modo `embed` del editor). El kit trae `tools/generador.py`, que revisa ese contrato. El panel lo ejecuta al iniciar y en `/api/estado`, y si algo no cuadra muestra un aviso arriba. `tools/validar.py` del kit también lo revisa.
 
 ## Nota sobre privacidad
 

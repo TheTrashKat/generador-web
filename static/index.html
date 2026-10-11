@@ -9,6 +9,7 @@
 <body>
   <header><div class="seal">TPD</div><div><p class="eyebrow">ESPACIO LOCAL</p><h1>Generador de piezas.</h1><p class="sub">Prepara imágenes y videos sin tocar el repositorio de marca.</p></div></header>
   <main>
+    <div id="kit-status" class="kit-status" role="status" aria-live="polite" hidden></div>
     <section class="panel project-panel">
       <div class="section-title"><div><p class="eyebrow">01 · PROYECTO</p><h2>Tu espacio de trabajo.</h2></div><button id="refresh" class="ghost">Actualizar</button></div>
       <div class="grid two"><label>Nombre del proyecto<input id="project-name" placeholder="Ej. Fotos de la jornada"></label><label>Notas y comentarios<textarea id="project-notes" rows="2" placeholder="Qué queremos comunicar, permisos, contexto..."></textarea></label></div>
@@ -39,19 +40,39 @@
 
     <section class="panel">
       <div class="section-title"><div><p class="eyebrow">04 · VIDEO</p><h2>Armar un video.</h2></div></div>
-      <div class="grid three"><label>Formato<select id="video-format"><option value="9x16-marco">Reel con marco</option><option value="9x16">Vertical pantalla completa</option><option value="16x9">Horizontal 16:9</option></select></label><label>Título principal<input id="video-title" value="ASÍ SE VIVE TAZÓN PARA DOS"></label><label>Etiqueta<input id="video-label" placeholder="Una tarde para jugar."></label></div>
-      <div class="grid three"><label>Línea visual<select id="video-style"><option value="editorial">Editorial (recomendado)</option><option value="zine">Mesa / Zine</option><option value="clasico">Clásica</option><option value="banda">Banda</option><option value="stickers">Stickers</option><option value="marco">Marco</option><option value="tiktok">TikTok</option></select></label><label>Información<input id="video-info" placeholder="SÁBADOS · 11:00 A.M. – 9:00 P.M."></label><label>Fondo<select id="video-background"><option value="teal">Turquesa</option><option value="coral">Coral</option><option value="sun">Sol</option><option value="ink">Tinta</option></select></label></div>
-      <div class="grid two"><label>Cierre estilo<select id="video-line"><option value="editorial">Editorial</option><option value="zine">Mesa / Zine</option></select></label><span></span></div>
-      <div id="tiktok-hook" class="grid three hidden"><label>Gancho · línea 1<input id="video-hook1" placeholder="¿PLAN PARA"></label><label>Gancho · línea 2<input id="video-hook2" placeholder="EL SÁBADO?"></label><label>Subtítulos<select id="video-subs"><option value="karaoke">Karaoke</option><option value="caja">Caja</option><option value="recorte">Recorte zine</option><option value="pop">Pop (una palabra)</option><option value="editorial">Editorial</option></select></label></div>
-      <div class="grid two"><label>Usuario<input id="video-user" value="@tazonparados"></label><label>Audio<select id="video-audio"><option value="original">Original</option><option value="silencio">Silencio</option></select></label></div>
-      <div class="checks"><label><input id="video-intro" type="checkbox" checked> Intro</label><label><input id="video-outro" type="checkbox" checked> Cierre</label></div>
-      <h3>Segmentos</h3><p class="muted">Selecciona archivos arriba y define duración y texto para cada uno.</p>
+      <div class="image-grid">
+        <div>
+          <div class="grid two"><label>Formato<select id="video-format"><option value="9x16">Vertical 9:16 (Reels, TikTok, historias)</option><option value="9x16-marco">Vertical con clip horizontal en marco</option><option value="16x9">Horizontal 16:9 (YouTube, Facebook)</option></select></label><label>Línea visual<select id="video-style"></select></label></div>
+          <p id="style-hint" class="hint"></p>
+          <h3>Marca en el video</h3>
+          <div id="capa-fields" class="fields"></div>
+          <div id="tiktok-box" class="hidden">
+            <h3>TikTok</h3>
+            <div class="fields">
+              <label>Gancho · línea 1 (primeros 1,8 s)<input id="video-hook1" placeholder="¿PLAN PARA"></label>
+              <label>Gancho · línea 2<input id="video-hook2" placeholder="EL SÁBADO?"></label>
+              <label>Subtítulos<select id="video-subs"><option value="karaoke">Karaoke (palabra activa en sol)</option><option value="caja">Caja</option><option value="recorte">Recorte zine</option><option value="pop">Pop (una palabra gigante)</option><option value="editorial">Editorial</option></select></label>
+              <label>Tarjeta de cierre<select id="video-line"><option value="zine">Mesa / Zine</option><option value="editorial">Editorial</option></select></label>
+              <label class="check wide"><input id="video-list" type="checkbox"> Formato lista (Top 3, Top 5…): número y título en cada segmento</label>
+            </div>
+          </div>
+          <div class="grid two opts"><label>Audio<select id="video-audio"><option value="original">Original de los clips</option><option value="silencio">Silencio (para poner música en la app)</option></select></label><div class="checks"><label><input id="video-intro" type="checkbox" checked> Intro</label><label><input id="video-outro" type="checkbox" checked> Cierre</label></div></div>
+        </div>
+        <div class="preview-box"><p class="eyebrow">VISTA PREVIA · PRIMER SEGMENTO</p><div id="video-preview" class="preview alpha"><p class="muted">Sube y marca fotos o videos.</p></div><p id="video-preview-note" class="muted small"></p></div>
+      </div>
+      <h3>Segmentos</h3><p class="muted">Cada foto o video marcado en 02 es un segmento. Ordénalos con las flechas; los separadores son tarjetas de capítulo.</p>
       <div id="segments" class="segments"><p class="muted">No hay archivos cargados.</p></div>
+      <div class="row-actions"><button id="add-separator" class="ghost" type="button">+ Agregar separador</button><p id="video-total" class="muted small"></p></div>
       <button id="make-video" class="primary">Generar video</button>
       <div id="video-result" class="result" aria-live="polite"></div>
     </section>
 
-      <section class="panel kit-panel"><div><p class="eyebrow">05 · KIT</p><h2>Regenerar recursos de video.</h2><p class="muted">Ejecuta <code>tools/video.py</code> en el repositorio de marca. Úsalo solo cuando necesites actualizar intros, cierres o capas.</p></div><button id="make-kit" class="secondary" type="button">Ejecutar video.py</button><div id="kit-result" class="result" aria-live="polite"></div></section>
+    <section class="panel">
+      <div class="section-title"><div><p class="eyebrow">05 · RESULTADOS</p><h2>Lo que has generado.</h2></div></div>
+      <div id="output-list" class="outputs"><p class="muted">Primero selecciona un proyecto.</p></div>
+    </section>
+
+    <section class="panel kit-panel"><div><p class="eyebrow">06 · KIT</p><h2>Mantenimiento del kit.</h2><p class="muted"><strong>Validar plantillas</strong> ejecuta <code>tools/validar.py</code> (debe dar 0 errores). <strong>Regenerar video</strong> ejecuta <code>tools/video.py</code>: úsalo solo cuando cambien intros, cierres o capas.</p></div><div class="kit-buttons"><button id="validate" class="secondary" type="button">Validar plantillas</button><button id="make-kit" class="ghost" type="button">Regenerar kit de video</button></div><div id="kit-result" class="result" aria-live="polite"></div></section>
   </main>
   <footer>Trabajo local · Tazón para Dos · Las salidas se guardan dentro del proyecto.</footer>
   <script src="/marca/editor/brand-data.js"></script>
