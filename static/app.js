@@ -359,9 +359,13 @@ function fieldHTML(f, value, id) {
   if (f.type === "textarea") return `<label class="wide">${label}<textarea id="${id}" data-key="${f.key}" rows="3">${escapeHtml(v)}</textarea></label>`;
   if (f.type === "select") return `<label>${label}<select id="${id}" data-key="${f.key}">${f.options.map(([o, l]) => `<option value="${escapeHtml(o)}"${String(o) === String(v) ? " selected" : ""}>${escapeHtml(l)}</option>`).join("")}</select></label>`;
   if (f.type === "image") {
+    // Selector visual: miniaturas de las fotos del proyecto + botón para subir una aquí mismo
     const imgs = projectImages();
-    const note = current ? (imgs.length ? "" : " (sube fotos en 02)") : " (elige un proyecto)";
-    return `<label class="wide">${label}${note}<select id="${id}" data-key="${f.key}"><option value="">Sin foto</option>${imgs.map((i) => `<option value="${escapeHtml(i.path)}"${i.path === v ? " selected" : ""}>${escapeHtml(i.name)}</option>`).join("")}</select></label>`;
+    const thumbs = imgs.map((i) => `<button type="button" class="photo-pick${i.path === v ? " on" : ""}" data-pick="${f.key}" data-path="${escapeHtml(i.path)}" title="${escapeHtml(i.name)}" aria-pressed="${i.path === v}"><img src="${fileURL(i.path)}" alt="${escapeHtml(i.name)}" loading="lazy"></button>`).join("");
+    const empty = !current ? '<p class="muted small">Primero elige o crea un proyecto en 01.</p>' : imgs.length ? "" : '<p class="muted small">Aún no hay fotos en el proyecto: súbela aquí.</p>';
+    return `<div class="wide photo-field"><span class="photo-label">${label}${v ? "" : ' <em class="missing">· falta elegir la foto</em>'}</span>` +
+      `<select id="${id}" data-key="${f.key}" hidden><option value="">Sin foto</option>${imgs.map((i) => `<option value="${escapeHtml(i.path)}"${i.path === v ? " selected" : ""}>${escapeHtml(i.name)}</option>`).join("")}</select>` +
+      `${empty}<div class="photo-picks">${thumbs}<label class="photo-add"${current ? "" : " hidden"}>＋ Subir foto<input type="file" accept="image/jpeg,image/png,image/webp" data-upload-for="${f.key}" hidden></label></div></div>`;
   }
   return `<label>${label}<input id="${id}" data-key="${f.key}" type="${f.type === "number" ? "number" : "text"}" value="${escapeHtml(v)}"></label>`;
 }
@@ -369,6 +373,14 @@ function fieldHTML(f, value, id) {
 function renderFields(values) {
   const t = kitTemplate();
   if (!t) return;
+  // Los campos de foto vacíos toman las fotos del proyecto en orden (foto1, foto2…), sin repetir
+  const imgs = projectImages().map((i) => i.path), used = new Set(Object.values(values));
+  values = { ...values };
+  t.fields.filter((f) => f.type === "image").forEach((f) => {
+    if (values[f.key] && imgs.includes(values[f.key])) return;
+    values[f.key] = imgs.find((path) => !used.has(path)) || "";
+    used.add(values[f.key]);
+  });
   $("image-fields").innerHTML = t.fields.map((f) => fieldHTML(f, values[f.key], `fld-${f.key}`)).join("") || '<p class="muted">Esta plantilla no tiene campos editables.</p>';
   syncJSON();
 }
@@ -424,6 +436,24 @@ $("video-subs").addEventListener("change", videoPreviewSoon);
 $("video-list").addEventListener("change", renderSegments);
 ["video-intro", "video-outro"].forEach((id) => $(id).addEventListener("change", updateTotal));
 $("template").onchange = () => (KIT ? selectTemplate() : null);
+$("image-fields").addEventListener("click", (e) => {
+  const pick = e.target.closest("[data-pick]");
+  if (!pick) return;
+  const values = formValues(); values[pick.dataset.pick] = pick.dataset.path;
+  renderFields(values); schedulePreview();
+});
+$("image-fields").addEventListener("change", async (e) => {
+  const input = e.target.closest("[data-upload-for]");
+  if (!input || !input.files.length || !current) return;
+  const key = input.dataset.uploadFor, projectId = current.id, values = formValues();
+  const form = new FormData(); form.append("files", input.files[0]);
+  input.parentElement.firstChild.textContent = "Subiendo… ";
+  try {
+    const r = await api(`/api/projects/${projectId}/upload`, { method: "POST", body: form });
+    await refresh(); $("project-select").value = projectId; showProject(projects.find((p) => p.id === projectId));
+    values[key] = r.saved[0]; renderFields(values); schedulePreview();
+  } catch (err) { $("image-result").textContent = err.message; renderFields(values); }
+});
 $("image-fields").addEventListener("input", () => { syncJSON(); schedulePreview(); });
 $("image-fields").addEventListener("change", () => { syncJSON(); schedulePreview(); });
 $("image-values").addEventListener("change", () => { if (KIT) { renderFields(readValues()); schedulePreview(); } });
@@ -454,6 +484,9 @@ $("dropzone").ondrop = (e) => { e.preventDefault(); uploadFiles(e.dataTransfer.f
 
 $("make-image").onclick = () => runBusy("make-image", async () => {
   if (!current) throw new Error("Selecciona un proyecto.");
+  const t = kitTemplate(), vals = parseImageValues();
+  const missing = t ? t.fields.filter((f) => f.type === "image" && !vals[f.key]).map((f) => f.label) : [];
+  if (missing.length) throw new Error(`Falta elegir: ${missing.join(", ")}. Toca una miniatura o usa «＋ Subir foto».`);
   $("image-result").textContent = "Generando imagen…";
   const result = await api(`/api/projects/${current.id}/image`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ template: $("template").value, values: parseImageValues() }) });
   $("image-result").innerHTML = formatResult(result, "image"); $("image-result").classList.toggle("done", !!result.ok);
