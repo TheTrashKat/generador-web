@@ -373,12 +373,14 @@ function fieldHTML(f, value, id) {
 function renderFields(values) {
   const t = kitTemplate();
   if (!t) return;
-  // Los campos de foto vacíos toman las fotos del proyecto en orden (foto1, foto2…), sin repetir
+  // Los campos de foto vacíos toman las fotos del proyecto en orden (foto1, foto2…), sin repetir mientras alcancen;
+  // si la plantilla pide más fotos de las que hay (p. ej. el mosaico de 6), se repiten en orden
   const imgs = projectImages().map((i) => i.path), used = new Set(Object.values(values));
   values = { ...values };
+  let k = 0;
   t.fields.filter((f) => f.type === "image").forEach((f) => {
     if (values[f.key] && imgs.includes(values[f.key])) return;
-    values[f.key] = imgs.find((path) => !used.has(path)) || "";
+    values[f.key] = imgs.find((path) => !used.has(path)) || (imgs.length ? imgs[k++ % imgs.length] : "");
     used.add(values[f.key]);
   });
   $("image-fields").innerHTML = t.fields.map((f) => fieldHTML(f, values[f.key], `fld-${f.key}`)).join("") || '<p class="muted">Esta plantilla no tiene campos editables.</p>';
