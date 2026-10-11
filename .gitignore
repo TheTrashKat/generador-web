@@ -1,0 +1,6 @@
+projects/*/media/*
+projects/*/outputs/*
+projects/*/jobs/*
+projects/*/project.json
+__pycache__/
+.DS_Store
