@@ -2,6 +2,9 @@ const $ = (id) => document.getElementById(id);
 let projects = [];
 let current = null;
 let templates = [];
+// Plantillas con sus campos, leídas del editor del kit de marca (/marca/editor/templates.js)
+const KIT = Array.isArray(window.TPDTemplates) ? window.TPDTemplates : null;
+const outSize = (t) => t.out || { w: t.w, h: t.h };
 
 async function api(url, options = {}) {
   const res = await fetch(url, options);
@@ -49,6 +52,7 @@ function showProject(p) {
   $("project-path").textContent = p ? `Ruta: ${p.paths.root}` : "";
   renderFiles();
   renderSegments();
+  if (KIT) { renderFields(readValues()); schedulePreview(); }
 }
 
 function renderProjects() {
@@ -90,7 +94,10 @@ function buildScript() {
   const estilo = formato === "16x9" ? $("video-style").value : $("video-style").value;
   const capa = { estilo, titulo1: $("video-title").value, etiqueta: $("video-label").value, usuario: $("video-user").value, info: $("video-info").value, linea: $("video-line").value, fondo: $("video-background").value };
   const script = { formato, salida: "", intro: $("video-intro").checked, cierre: $("video-outro").checked, audio: $("video-audio").value, marco: { receta: "general", titulo: $("video-title").value, etiqueta: $("video-label").value, usuario: $("video-user").value }, capa, segmentos: segments };
-  if (estilo === "tiktok") script.gancho = { linea1: $("video-hook1").value, linea2: $("video-hook2").value };
+  if (estilo === "tiktok") {
+    capa.subtitulos = $("video-subs").value;
+    if ($("video-hook1").value.trim() || $("video-hook2").value.trim()) script.gancho = { linea1: $("video-hook1").value, linea2: $("video-hook2").value };
+  }
   return script;
 }
 
@@ -110,8 +117,88 @@ async function refresh() {
 }
 
 async function loadTemplates() {
+  if (KIT) {
+    templates = KIT.filter((t) => t.id !== "guia_zonas");
+    const groups = {};
+    templates.forEach((t) => (groups[t.group] = groups[t.group] || []).push(t));
+    $("template").innerHTML = Object.entries(groups).map(([g, ts]) => `<optgroup label="${escapeHtml(g)}">` +
+      ts.map((t) => `<option value="${t.id}">${escapeHtml(t.name)} · ${outSize(t).w}×${outSize(t).h}</option>`).join("") + "</optgroup>").join("");
+    selectTemplate();
+    return;
+  }
+  // Sin acceso al editor del kit: lista básica y valores en JSON
   const data = await api("/api/templates"); templates = data.templates;
   $("template").innerHTML = templates.map((t) => `<option value="${t.id}">${escapeHtml(t.name)} · ${t.size}</option>`).join("");
+  $("image-fields").innerHTML = '<p class="muted">No se pudo cargar el editor del kit de marca: escribe los valores en JSON.</p>';
+  document.querySelector(".advanced").open = true;
+}
+
+// ---- Formulario de la plantilla (campos de editor/templates.js) y vista previa
+const kitTemplate = () => KIT && KIT.find((t) => t.id === $("template").value);
+const defaultsOf = (t) => Object.fromEntries(t.fields.map((f) => [f.key, f.default ?? ""]));
+const projectImages = () => (current ? current.files.filter((f) => f.kind === "image") : []);
+
+function readValues() {
+  try { const v = JSON.parse($("image-values").value); return v && typeof v === "object" && !Array.isArray(v) ? v : {}; } catch { return {}; }
+}
+
+function renderFields(values) {
+  const t = kitTemplate();
+  if (!t) return;
+  $("image-fields").innerHTML = t.fields.map((f) => {
+    const id = `fld-${f.key}`, v = values[f.key] ?? f.default ?? "", label = escapeHtml(f.label);
+    if (f.type === "checkbox") return `<label class="check"><input type="checkbox" id="${id}" data-key="${f.key}"${v ? " checked" : ""}> ${label}</label>`;
+    if (f.type === "textarea") return `<label class="wide">${label}<textarea id="${id}" data-key="${f.key}" rows="3">${escapeHtml(v)}</textarea></label>`;
+    if (f.type === "select") return `<label>${label}<select id="${id}" data-key="${f.key}">${f.options.map(([o, l]) => `<option value="${escapeHtml(o)}"${String(o) === String(v) ? " selected" : ""}>${escapeHtml(l)}</option>`).join("")}</select></label>`;
+    if (f.type === "image") {
+      const imgs = projectImages();
+      const note = current ? (imgs.length ? "" : " (sube fotos en 02)") : " (elige un proyecto)";
+      return `<label class="wide">${label}${note}<select id="${id}" data-key="${f.key}"><option value="">Sin foto</option>${imgs.map((i) => `<option value="${escapeHtml(i.path)}"${i.path === v ? " selected" : ""}>${escapeHtml(i.name)}</option>`).join("")}</select></label>`;
+    }
+    return `<label>${label}<input id="${id}" data-key="${f.key}" type="${f.type === "number" ? "number" : "text"}" value="${escapeHtml(v)}"></label>`;
+  }).join("") || '<p class="muted">Esta plantilla no tiene campos editables.</p>';
+  syncJSON();
+}
+
+function formValues() {
+  const values = {};
+  $("image-fields").querySelectorAll("[data-key]").forEach((el) => {
+    values[el.dataset.key] = el.type === "checkbox" ? el.checked : el.type === "number" ? Number(el.value) : el.value;
+  });
+  return values;
+}
+
+function syncJSON() { $("image-values").value = JSON.stringify(formValues(), null, 2); }
+
+function selectTemplate() {
+  const t = kitTemplate();
+  if (!t) return;
+  renderFields(defaultsOf(t));
+  const o = outSize(t);
+  $("preview-size").textContent = `${t.id} · ${o.w}×${o.h} px${t.transparent ? " · capa transparente para video" : ""}`;
+  schedulePreview();
+}
+
+function b64url(text) {
+  let bin = ""; new TextEncoder().encode(text).forEach((b) => (bin += String.fromCharCode(b)));
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+let previewTimer = 0;
+function schedulePreview() { clearTimeout(previewTimer); previewTimer = setTimeout(renderPreview, 350); }
+
+function renderPreview() {
+  const t = kitTemplate();
+  if (!t) return;
+  const values = readValues();
+  // Las fotos del proyecto se ven en la vista previa desde /files/<proyecto>/media/...
+  for (const [k, v] of Object.entries(values)) {
+    if (current && typeof v === "string" && /^(\.\/)?media\//.test(v)) values[k] = `/files/${encodeURIComponent(current.id)}/${v.replace(/^\.\//, "").split("/").map(encodeURIComponent).join("/")}`;
+  }
+  const o = outSize(t), box = $("preview"), k = box.clientWidth / o.w;
+  box.classList.toggle("alpha", !!t.transparent);
+  box.style.height = `${Math.round(o.h * k)}px`;
+  box.innerHTML = `<iframe title="Vista previa" scrolling="no" width="${o.w}" height="${o.h}" style="transform:scale(${k})" src="/marca/editor/index.html?embed=1&t=${encodeURIComponent(t.id)}&d=${b64url(JSON.stringify(values))}"></iframe>`;
 }
 
 $("create-project").onclick = async () => {
@@ -121,6 +208,11 @@ $("project-select").onchange = () => showProject(selectedProject());
 $("refresh").onclick = refresh;
 $("video-format").onchange = updateVideoStyles;
 $("video-style").onchange = updateVideoStyles;
+$("template").onchange = () => (KIT ? selectTemplate() : null);
+$("image-fields").addEventListener("input", () => { syncJSON(); schedulePreview(); });
+$("image-fields").addEventListener("change", () => { syncJSON(); schedulePreview(); });
+$("image-values").addEventListener("change", () => { if (KIT) { renderFields(readValues()); schedulePreview(); } });
+window.addEventListener("resize", schedulePreview);
 
 async function uploadFiles(fileList) {
   if (!current) return alert("Selecciona primero un proyecto.");
@@ -145,7 +237,7 @@ $("dropzone").ondrop = (e) => { e.preventDefault(); uploadFiles(e.dataTransfer.f
 
 $("make-image").onclick = async () => {
   if (!current) return alert("Selecciona un proyecto.");
-  try { const values = JSON.parse($("image-values").value); const result = await api(`/api/projects/${current.id}/image`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ template: $("template").value, values }) }); $("image-result").innerHTML = formatResult(result); await refresh(); } catch (e) { $("image-result").textContent = e.message; }
+  try { const values = parseImageValues(); const result = await api(`/api/projects/${current.id}/image`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ template: $("template").value, values }) }); $("image-result").innerHTML = formatResult(result); await refresh(); } catch (e) { $("image-result").textContent = e.message; }
 };
 $("make-video").onclick = async () => {
   if (!current) return alert("Selecciona un proyecto.");

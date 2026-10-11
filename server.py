@@ -11,9 +11,10 @@ import subprocess
 import sys
 import time
 import uuid
+import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parent
 BRAND = Path(os.environ.get("BRAND_REPO", ROOT.parent / "tazon-para-dos-marca")).expanduser().resolve()
@@ -22,6 +23,12 @@ STATIC = ROOT / "static"
 PORT = int(os.environ.get("PORT", "8765"))
 MAX_UPLOAD = 1024 * 1024 * 1024
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+# Windows toma los tipos MIME del registro y a veces sirve .js como text/plain: se fijan aquí.
+for _ext, _kind in {".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".json": "application/json",
+                    ".ttf": "font/ttf", ".webp": "image/webp", ".mp4": "video/mp4", ".png": "image/png"}.items():
+    mimetypes.add_type(_kind, _ext)
+# Partes del kit de marca que el panel puede leer (vista previa y formularios). Nunca .git ni salidas.
+BRAND_PUBLIC = ("editor/", "brand/", "assets/", "tools/fonts/")
 
 
 def now_id() -> str:
@@ -119,6 +126,12 @@ def project_json(path: Path) -> dict:
     return data
 
 
+def disposition(name: str) -> str:
+    """Encabezado de descarga válido aunque el nombre tenga tildes u otros caracteres."""
+    ascii_name = clean_name(name).encode("ascii", "replace").decode().replace("?", "_")
+    return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(clean_name(name))}"
+
+
 def json_response(handler: BaseHTTPRequestHandler, payload: dict, status: int = 200):
     body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
     try:
@@ -168,7 +181,7 @@ def run_python(script: Path, args: list[str], cwd: Path, timeout: int = 1800) ->
     if not script.exists():
         return {"ok": False, "error": f"No existe: {script}"}
     try:
-        proc = subprocess.run([os.environ.get("PYTHON") or sys.executable, "-I", str(script), *args], cwd=cwd,
+        proc = subprocess.run([os.environ.get("PYTHON") or sys.executable, "-I", "-X", "utf8", str(script), *args], cwd=cwd,
                               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
         return {"ok": proc.returncode == 0, "code": proc.returncode,
                 "stdout": proc.stdout[-12000:], "stderr": proc.stderr[-12000:]}
@@ -207,6 +220,8 @@ class App(BaseHTTPRequestHandler):
                 return self.static("index.html")
             if url.path.startswith("/static/"):
                 return self.static(url.path.removeprefix("/static/"))
+            if url.path.startswith("/marca/"):
+                return self.brand_file(url.path.removeprefix("/marca/"))
             if url.path == "/api/projects":
                 PROJECTS.mkdir(exist_ok=True)
                 items = [project_json(p) for p in sorted(PROJECTS.iterdir()) if p.is_dir() and (p / "project.json").exists()]
@@ -222,7 +237,7 @@ class App(BaseHTTPRequestHandler):
                 body = target.read_bytes()
                 self.send_response(200)
                 self.send_header("Content-Type", mimetypes.guess_type(str(target))[0] or "application/octet-stream")
-                self.send_header("Content-Disposition", f'attachment; filename="{clean_name(target.name)}"')
+                self.send_header("Content-Disposition", disposition(target.name))
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -265,7 +280,7 @@ class App(BaseHTTPRequestHandler):
                         target = path / "media" / f"{stem}-{n}{suffix}"
                         n += 1
                     target.write_bytes(content)
-                    saved.append(str(target.relative_to(path)))
+                    saved.append(target.relative_to(path).as_posix())
                 return json_response(self, {"saved": saved, "project": project_json(path)})
 
             match = re.fullmatch(r"/api/projects/([\w-]+)/image", url.path)
@@ -323,15 +338,31 @@ class App(BaseHTTPRequestHandler):
         except Exception as exc:
             return json_response(self, {"error": str(exc)}, 400)
 
+    def brand_file(self, name: str):
+        name = unquote(name)
+        target = (BRAND / name).resolve()
+        # Se valida la ruta ya resuelta: "editor/../.git/config" no debe pasar por empezar con "editor/"
+        rel = target.relative_to(BRAND).as_posix() if BRAND in target.parents else ""
+        if not rel.startswith(BRAND_PUBLIC) or not target.is_file():
+            return json_response(self, {"error": "Archivo no encontrado"}, 404)
+        self.send_file(target)
+
     def static(self, name: str):
         name = unquote(name)
         target = (STATIC / name).resolve()
         if STATIC.resolve() not in target.parents or not target.is_file():
             return json_response(self, {"error": "Archivo no encontrado"}, 404)
+        self.send_file(target)
+
+    def send_file(self, target: Path):
         body = target.read_bytes()
         self.send_response(200)
-        self.send_header("Content-Type", mimetypes.guess_type(str(target))[0] or "application/octet-stream")
+        kind = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+        if kind.startswith("text/") or kind in ("application/javascript", "application/json", "image/svg+xml"):
+            kind += "; charset=utf-8"
+        self.send_header("Content-Type", kind)
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         self.wfile.write(body)
 
@@ -341,8 +372,15 @@ def main():
     if not (BRAND / "tools").is_dir():
         print(f"Advertencia: no se encontró el kit en {BRAND}")
     print(f"Kit de marca: {BRAND}")
-    print(f"Panel local: http://127.0.0.1:{PORT}")
-    ThreadingHTTPServer(("127.0.0.1", PORT), App).serve_forever()
+    url = f"http://127.0.0.1:{PORT}"
+    print(f"Panel local: {url}")
+    server = ThreadingHTTPServer(("127.0.0.1", PORT), App)
+    if "--abrir" in sys.argv:
+        webbrowser.open(url)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("Panel detenido.")
 
 
 if __name__ == "__main__":
