@@ -506,7 +506,7 @@ def main():
         print(f"Aviso: {problem}")
     url = f"http://127.0.0.1:{PORT}"
     print(f"Panel local: {url}")
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), App)
+    server = ThreadingHTTPServer((os.environ.get("HOST", "127.0.0.1"), PORT), App)
     if "--abrir" in sys.argv:
         webbrowser.open(url)
     try:

@@ -5,3 +5,8 @@ projects/*/project.json
 __pycache__/
 .DS_Store
 projects/*/thumbs/*
+
+# respaldos de agentes y accesos directos (2026-11-18)
+*.bak
+*.bak-*
+*.lnk
